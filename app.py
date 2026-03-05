@@ -245,7 +245,23 @@ def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
 
 
 def pk_card_html(label: str, value: str) -> str:
+
+    colors = {
+        "Sakin": "#2ecc71",
+        "Enflasyon Baskısı": "#f1c40f",
+        "Risk Şoku": "#e67e22",
+        "Stres": "#e74c3c",
+        "İyileşme": "#3498db"
+    }
+
+    color = colors.get(value, "#bdc3c7")
+
     return f"""
+<div class="pk_card" style="border-left:6px solid {color};">
+  <div class="pk_label">{label}</div>
+  <div class="pk_value">{value}</div>
+</div>
+"""    return f"""
 <div class="pk_card">
   <div class="pk_label">{label}</div>
   <div class="pk_value">{value}</div>
@@ -319,6 +335,15 @@ def expected_vs_realized_table(dyn: dict, realized_rets: dict) -> pd.DataFrame:
 
 def tur_sonu_yorum(piyasa_kosullari: str, cds_bps: int, weights: dict, realized_rets: dict, tr_price_effect: float, shock: dict | None) -> str:
     contrib = {a: weights[a] * realized_rets[a] for a in ASSETS}
+    best_asset = max(contrib, key=contrib.get)
+worst_asset = min(contrib, key=contrib.get)
+lines.append(
+f"- En çok katkı: **{ASSET_NAMES[best_asset]}** ({contrib[best_asset]*100:.2f} puan)"
+)
+
+lines.append(
+f"- En olumsuz katkı: **{ASSET_NAMES[worst_asset]}** ({contrib[worst_asset]*100:.2f} puan)"
+)
     biggest = max(contrib, key=lambda k: abs(contrib[k]))
     biggest_name = ASSET_NAMES[biggest]
     biggest_points = contrib[biggest] * 100
@@ -506,8 +531,18 @@ with right:
 
         eq_fx = weights["EQ"] + weights["FX"]
         rlab, rbar = risk_label_and_bar(eq_fx)
-        st.markdown(f"**Portföy Risk Göstergesi (Borsa% + Kur%)**: `{rbar}`  → **{rlab}** (skor: {int(round(eq_fx*100))})")
+risk_score = int(round(eq_fx*100))
 
+st.markdown(
+f"""
+**Portföy Risk Göstergesi**
+
+{rbar}
+
+Risk Seviyesi: **{rlab}**  
+Borsa + Kur Ağırlığı: **%{risk_score}**
+"""
+)
         m1, m2 = st.columns(2)
         m1.metric("Beklenen getiri (bu tur)", f"{exp_mu*100:.2f}%")
         m2.metric("Tahmini risk (bu tur)", f"{exp_sigma*100:.2f}%")
