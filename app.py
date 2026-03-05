@@ -3,7 +3,6 @@
 # CDS – Politika faizi – Enflasyon beklentisi → TR tahvil faizi
 # Faiz ↑ → Tahvil fiyatı ↓ (fiyat etkisi)
 #
-# Not: Kuyruk riski ve VaR tamamen çıkarıldı (kafa karışıklığı olmaması için).
 #
 # Çalıştır:
 #   pip install streamlit numpy pandas
@@ -168,8 +167,6 @@ if "bench_capital" not in st.session_state:
 # UI – Başlık + Reset
 # -----------------------------
 st.title("🎮 Risk mi Getiri mi? – Bireysel Portföy Oyunu")
-st.caption("Kuyruk riski ve VaR yok. Sadece CDS–faiz–tahvil fiyatı mekanizması + portföy kararı.")
-
 top_left, top_right = st.columns([1, 1])
 with top_left:
     st.metric("Portföy Değeri", f"{st.session_state.capital:,.0f} TL")
