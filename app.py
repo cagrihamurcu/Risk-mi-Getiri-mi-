@@ -3,6 +3,9 @@
 # CDS – Politika faizi – Enflasyon beklentisi → TR tahvil faizi
 # Faiz ↑ → Tahvil fiyatı ↓ (fiyat etkisi)
 #
+# Değişiklikler:
+# - "Karar ver ve oyna" bölümünde slider yerine % kutucuk (number_input) var.
+# - Mini soru kaldırıldı.
 #
 # Çalıştır:
 #   pip install streamlit numpy pandas
@@ -29,7 +32,6 @@ ASSET_NAMES = {
 }
 
 # Normal koşullarda (tur başına) temsili getiri/oynaklık
-# (Öğrenci karar verirken “beklenen getiri” ve “oynaklık” görsün diye)
 NORMAL_PARAMS = {
     "TR_2Y_BOND": {"mu": 0.020, "sigma": 0.015},
     "US_BOND":    {"mu": 0.008, "sigma": 0.005},
@@ -37,7 +39,6 @@ NORMAL_PARAMS = {
     "CASH":       {"mu": 0.000, "sigma": 0.000},
 }
 
-# Senaryo turları (temsili)
 ROUNDS = [
     {"tur": 1, "haber": "Sakin dönem: risk algısı düşük",                          "policy": 0.35, "cds": 250, "inf_exp": 0.30},
     {"tur": 2, "haber": "Enflasyon beklentisi yükseliyor",                         "policy": 0.35, "cds": 320, "inf_exp": 0.45},
@@ -53,71 +54,41 @@ def clamp(x, lo=0.0, hi=1.0):
     return max(lo, min(hi, x))
 
 def tr_yield_from_policy_cds_infl(policy: float, cds_bps: int, inf_exp: float) -> dict:
-    """
-    TR 2Y tahvil faizi bileşenleri (temsili):
-      y = politika + (enflasyon beklentisi katmanı) + (risk primi)
-    """
     k = 1.10
     risk_premium = (cds_bps / 10000.0) * k
     inflation_layer = 0.30 * inf_exp
-    y = policy + inflation_layer + risk_premium
-    y = max(y, 0.0)
-    return {
-        "yield": y,
-        "policy": policy,
-        "infl_layer": inflation_layer,
-        "risk_premium": risk_premium
-    }
+    y = max(policy + inflation_layer + risk_premium, 0.0)
+    return {"yield": y, "policy": policy, "infl_layer": inflation_layer, "risk_premium": risk_premium}
 
 def bond_price_from_yield(y: float, duration: float = 1.8, face: float = 100.0) -> float:
-    """Basit tahvil fiyat yaklaşımı: Fiyat ≈ Face / (1+y)^duration"""
     y = max(y, 1e-6)
     return face / ((1.0 + y) ** duration)
 
-def validate_weights(w: dict) -> tuple[bool, str]:
-    s = sum(w.values())
-    if abs(s - 1.0) > 1e-9:
-        return False, "Ağırlıkların toplamı %100 olmalı."
-    if any(v < 0 for v in w.values()):
-        return False, "Ağırlıklar negatif olamaz."
-    return True, ""
+def validate_percentages(pcts: dict) -> tuple[bool, str, int]:
+    total = int(round(sum(pcts.values())))
+    if total != 100:
+        return False, "Toplam **%100** olmalı. (İpucu: kutulardan birini azaltıp/artırın.)", total
+    if any(v < 0 for v in pcts.values()):
+        return False, "Yüzdeler negatif olamaz.", total
+    return True, "", total
 
 def portfolio_stats(weights: dict, means: dict, sigmas: dict) -> tuple[float, float]:
-    """
-    Basit (korelasyon yok varsayımıyla) portföy beklenen getiri ve risk (sigma).
-    Ders için anlaşılır.
-    """
     mu_p = sum(weights[a] * means[a] for a in ASSETS)
-    var_p = sum((weights[a] ** 2) * (sigmas[a] ** 2) for a in ASSETS)
+    var_p = sum((weights[a] ** 2) * (sigmas[a] ** 2) for a in ASSETS)  # korelasyon yok varsayımı
     return float(mu_p), float(np.sqrt(var_p))
 
 def simulate_round_returns(rng: np.random.Generator, weights: dict, tr_price_effect: float, cds_bps: int) -> dict:
-    """
-    Tur gerçekleşen getiriler:
-    - US, Cash: normal
-    - Equity: CDS yükseldikçe beklenen getiri biraz düşsün (risk algısı)
-    - TR bond: normal + tahvil fiyat etkisi (faiz değişimi)
-    """
     rets = {}
 
-    # US Bond
     rets["US_BOND"] = float(rng.normal(NORMAL_PARAMS["US_BOND"]["mu"], NORMAL_PARAMS["US_BOND"]["sigma"]))
-
-    # Cash
     rets["CASH"] = 0.0
 
-    # Equity: CDS arttıkça mu biraz azalır (temsili davranış)
-    cds_penalty = (cds_bps / 10000.0) * 0.06  # 600 bps -> ~0.036 (tur başına beklenen getiriyi düşürür)
-    eq_mu = NORMAL_PARAMS["EQUITY"]["mu"] - cds_penalty
-    eq_mu = clamp(eq_mu, -0.05, 0.05)
+    cds_penalty = (cds_bps / 10000.0) * 0.06  # temsili
+    eq_mu = clamp(NORMAL_PARAMS["EQUITY"]["mu"] - cds_penalty, -0.05, 0.05)
     rets["EQUITY"] = float(rng.normal(eq_mu, NORMAL_PARAMS["EQUITY"]["sigma"]))
 
-    # TR Bond: normal + fiyat etkisi
-    tr_mu = NORMAL_PARAMS["TR_2Y_BOND"]["mu"]
-    tr_sigma = NORMAL_PARAMS["TR_2Y_BOND"]["sigma"]
-    rets["TR_2Y_BOND"] = float(rng.normal(tr_mu, tr_sigma) + tr_price_effect)
+    rets["TR_2Y_BOND"] = float(rng.normal(NORMAL_PARAMS["TR_2Y_BOND"]["mu"], NORMAL_PARAMS["TR_2Y_BOND"]["sigma"]) + tr_price_effect)
 
-    # Portföy
     port_r = 0.0
     for a in ASSETS:
         port_r += weights[a] * rets[a]
@@ -148,7 +119,6 @@ if "history" not in st.session_state:
     st.session_state.history = []
 
 if "seed" not in st.session_state:
-    # Kontroller paneli yok; ama resetlenebilir sabit seed
     st.session_state.seed = 42
 
 if "prev_tr_yield" not in st.session_state:
@@ -162,6 +132,16 @@ if "bench_capital" not in st.session_state:
         "60/40 (Borsa/TR Tahvil)": float(STARTING_CAPITAL),
         "Dengeli (25/25/40/10)": float(STARTING_CAPITAL),
     }
+
+# Varsayılan yüzde kutuları için state
+if "pct_tr" not in st.session_state:
+    st.session_state.pct_tr = 40
+if "pct_us" not in st.session_state:
+    st.session_state.pct_us = 20
+if "pct_eq" not in st.session_state:
+    st.session_state.pct_eq = 30
+if "pct_cash" not in st.session_state:
+    st.session_state.pct_cash = 10
 
 # -----------------------------
 # UI – Başlık + Reset
@@ -179,13 +159,11 @@ with top_right:
         first = ROUNDS[0]
         st.session_state.prev_tr_yield = tr_yield_from_policy_cds_infl(first["policy"], first["cds"], first["inf_exp"])["yield"]
         st.session_state.bench_capital = {k: float(STARTING_CAPITAL) for k in st.session_state.bench_capital.keys()}
+        st.session_state.pct_tr, st.session_state.pct_us, st.session_state.pct_eq, st.session_state.pct_cash = 40, 20, 30, 10
         st.rerun()
 
 st.markdown("---")
 
-# -----------------------------
-# Layout: 2 sütun (sol: bilgi + interaktif, sağ: karar + sonuç)
-# -----------------------------
 left, right = st.columns([1.15, 0.85])
 
 # -----------------------------
@@ -228,19 +206,12 @@ with left:
 
         with st.expander("Mekanizmayı Aç (CDS → faiz → fiyat)", expanded=True):
             st.write("**TR Tahvil Faizi Bileşenleri (temsili):**")
-            df_comp = pd.DataFrame([{
-                "Bileşen": "Politika faizi",
-                "Katkı": comps["policy"]
-            }, {
-                "Bileşen": "Enflasyon bekl. katmanı",
-                "Katkı": comps["infl_layer"]
-            }, {
-                "Bileşen": "Risk primi (CDS etkisi)",
-                "Katkı": comps["risk_premium"]
-            }, {
-                "Bileşen": "Toplam TR 2Y faiz",
-                "Katkı": comps["yield"]
-            }])
+            df_comp = pd.DataFrame([
+                {"Bileşen": "Politika faizi", "Katkı": comps["policy"]},
+                {"Bileşen": "Enflasyon bekl. katmanı", "Katkı": comps["infl_layer"]},
+                {"Bileşen": "Risk primi (CDS etkisi)", "Katkı": comps["risk_premium"]},
+                {"Bileşen": "Toplam TR 2Y faiz", "Katkı": comps["yield"]},
+            ])
             df_comp["Katkı (%)"] = (df_comp["Katkı"] * 100).round(2).astype(str) + "%"
             st.dataframe(df_comp[["Bileşen", "Katkı (%)"]], use_container_width=True)
 
@@ -249,14 +220,14 @@ with left:
             curr_p = bond_price_from_yield(tr_y)
             price_effect = (curr_p - prev_p) / prev_p
 
-            st.write("**Tahvil Fiyatı – Faiz Ters İlişkisi (temsili hesap):**")
+            st.write("**Tahvil Fiyatı – Faiz Ters İlişkisi (temsili):**")
             st.write(f"- Önceki faiz: **%{prev_y*100:.1f}** → fiyat endeksi: **{prev_p:.2f}**")
             st.write(f"- Bu tur faiz: **%{tr_y*100:.1f}** → fiyat endeksi: **{curr_p:.2f}**")
             st.write(f"- Faiz değişiminin fiyat etkisi (yaklaşık): **{price_effect*100:.2f}%**")
             st.info("Özet: **Faiz yükseldikçe tahvil fiyatı düşme eğilimindedir**. Bu yüzden yüksek faiz her zaman “kazanç” demek değildir.")
 
 # -----------------------------
-# Sağ: Karar + daha interaktif çıktı
+# Sağ: Karar + Sonuç
 # -----------------------------
 with right:
     st.subheader("3) Karar Ver ve Oyna")
@@ -266,27 +237,26 @@ with right:
         comps = tr_yield_from_policy_cds_infl(rinfo["policy"], rinfo["cds"], rinfo["inf_exp"])
         tr_y = comps["yield"]
 
-        # Ağırlık sliderları
-        w_tr = st.slider("Türkiye 2Y Tahvil (%)", 0, 100, 40)
-        w_us = st.slider("ABD Tahvil (%)", 0, 100, 20)
-        w_eq = st.slider("Borsa Endeksi (%)", 0, 100, 30)
-        w_cash = st.slider("Nakit (%)", 0, 100, 10)
+        st.write("Yüzdeleri kutucuklardan gir (toplam %100):")
 
-        total = w_tr + w_us + w_eq + w_cash
+        i1, i2 = st.columns(2)
+        with i1:
+            pct_tr = st.number_input("Türkiye 2Y Tahvil (%)", min_value=0, max_value=100, value=int(st.session_state.pct_tr), step=1, key="pct_tr")
+            pct_eq = st.number_input("Borsa Endeksi (%)", min_value=0, max_value=100, value=int(st.session_state.pct_eq), step=1, key="pct_eq")
+        with i2:
+            pct_us = st.number_input("ABD Tahvil (%)", min_value=0, max_value=100, value=int(st.session_state.pct_us), step=1, key="pct_us")
+            pct_cash = st.number_input("Nakit (%)", min_value=0, max_value=100, value=int(st.session_state.pct_cash), step=1, key="pct_cash")
+
+        pcts = {"TR_2Y_BOND": pct_tr, "US_BOND": pct_us, "EQUITY": pct_eq, "CASH": pct_cash}
+        ok, msg, total = validate_percentages(pcts)
+
         st.write(f"Toplam: **%{total}**")
-
-        weights = {
-            "TR_2Y_BOND": w_tr / 100.0,
-            "US_BOND": w_us / 100.0,
-            "EQUITY": w_eq / 100.0,
-            "CASH": w_cash / 100.0,
-        }
-
-        ok, msg = validate_weights(weights)
         if not ok:
             st.error(msg)
 
-        # Daha interaktif: "Beklenen sonuç" mini paneli
+        weights = {a: pcts[a] / 100.0 for a in ASSETS}
+
+        # Beklenen sonuç paneli (kararı kolaylaştırır)
         means = {a: NORMAL_PARAMS[a]["mu"] for a in ASSETS}
         sigmas = {a: NORMAL_PARAMS[a]["sigma"] for a in ASSETS}
         exp_mu, exp_sigma = portfolio_stats(weights, means, sigmas)
@@ -295,19 +265,6 @@ with right:
         p1.metric("Beklenen getiri (tur)", f"{exp_mu*100:.2f}%")
         p2.metric("Tahmini risk (oynaklık)", f"{exp_sigma*100:.2f}%")
 
-        # Mini quiz (anlık etkileşim)
-        st.markdown("#### Mini Soru (10 sn)")
-        quiz = st.radio(
-            "CDS hızla yükselirse aşağıdakilerden hangisi daha olasıdır?",
-            ["Tahvil faizi düşer", "Tahvil faizi yükselir", "Hiç değişmez"],
-            index=1
-        )
-        if quiz == "Tahvil faizi yükselir":
-            st.success("Doğru ✅ CDS ↑ → risk primi ↑ → tahvil faizi ↑ (genellikle).")
-        else:
-            st.warning("İpucu: CDS ülke risk algısıdır. Risk ↑ ise yatırımcı daha yüksek getiri ister.")
-
-        # Oynat butonu
         run_btn = st.button("▶️ Turu Oyna", disabled=(not ok))
 
         if run_btn and ok:
@@ -317,10 +274,8 @@ with right:
             curr_p = bond_price_from_yield(tr_y)
             tr_price_effect = (curr_p - prev_p) / prev_p
 
-            # RNG (kontroller yok; ama deterministik seed + tur ile)
             rng = np.random.default_rng(st.session_state.seed + rinfo["tur"] * 101)
 
-            # Tur getirileri
             asset_rets = simulate_round_returns(rng, weights, tr_price_effect, rinfo["cds"])
             port_r = asset_rets["PORTFOLIO"]
 
@@ -328,13 +283,12 @@ with right:
             new_cap = old_cap * (1.0 + port_r)
             st.session_state.capital = float(new_cap)
 
-            # Benchmark’ler (öğrenci kendini kıyaslasın)
+            # Benchmark’ler
             for bname in list(st.session_state.bench_capital.keys()):
                 bw = benchmark_weights(bname)
                 b_rets = simulate_round_returns(rng, bw, tr_price_effect, rinfo["cds"])
                 st.session_state.bench_capital[bname] *= (1.0 + b_rets["PORTFOLIO"])
 
-            # Kaydet
             st.session_state.history.append({
                 "Tur": rinfo["tur"],
                 "Haber": rinfo["haber"],
@@ -355,7 +309,6 @@ with right:
                 "Ağırlık_Nakit": weights["CASH"],
             })
 
-            # Sonuç göster
             st.markdown("### Tur Sonucu")
             s1, s2 = st.columns(2)
             s1.metric("Portföy getirisi", f"{port_r*100:.2f}%")
@@ -368,9 +321,8 @@ with right:
             } for a in ASSETS])
             st.dataframe(df_ret, use_container_width=True)
 
-            st.info("Tartışma: TR tahvil faizi yükseldi mi? Peki tahvil fiyat etkisi (faiz ↑ → fiyat ↓) portföyü nasıl etkiledi?")
+            st.info("Tartışma: TR tahvil faizi yükseldi mi? Tahvil fiyat etkisi (faiz ↑ → fiyat ↓) portföyünü nasıl etkiledi?")
 
-            # tur ilerlet
             st.session_state.prev_tr_yield = tr_y
             st.session_state.tur_idx += 1
             st.rerun()
@@ -378,7 +330,7 @@ with right:
         st.success("Oyun tamamlandı ✅")
 
 # -----------------------------
-# Özet + Benchmark kıyas
+# Özet + Benchmark
 # -----------------------------
 st.markdown("---")
 st.subheader("📊 Özet (Tur Tur) + Kıyas")
@@ -395,7 +347,6 @@ else:
     ]
     df_show = df_hist[show_cols].copy()
 
-    # yüzde format
     df_show["TR_Tahvil_Faiz"] = df_show["TR_Tahvil_Faiz"] * 100
     df_show["Tahvil_Fiyat_Etkisi"] = df_show["Tahvil_Fiyat_Etkisi"] * 100
     df_show["Portföy_Getiri"] = df_show["Portföy_Getiri"] * 100
@@ -417,15 +368,10 @@ else:
     )
 
     st.markdown("### Kıyas (Benchmark Stratejiler)")
-    bench_df = pd.DataFrame([{
-        "Strateji": k,
-        "Değer": v
-    } for k, v in st.session_state.bench_capital.items()]).sort_values("Değer", ascending=False)
-
-    # Öğrencinin kendi portföyü
+    bench_df = pd.DataFrame([{"Strateji": k, "Değer": v} for k, v in st.session_state.bench_capital.items()]).sort_values("Değer", ascending=False)
     bench_df = pd.concat([pd.DataFrame([{"Strateji": "Senin Portföyün", "Değer": st.session_state.capital}]), bench_df], ignore_index=True)
+
     st.dataframe(bench_df.style.format({"Değer": "{:,.0f}"}), use_container_width=True)
 
-    # CSV indir
     csv = df_hist.to_csv(index=False).encode("utf-8")
     st.download_button("⬇️ Sonuçları CSV indir", data=csv, file_name="bireysel_portfoy_oyunu_sonuclar.csv", mime="text/csv")
