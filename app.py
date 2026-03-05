@@ -1,34 +1,26 @@
 # app.py
-# Borsa Uygulamaları – Bireysel Portföy Oyunu (Rejim Bazlı + Kur + Leaderboard + Grafik + Mekanizma Animasyonu)
+# Borsa Uygulamaları – Bireysel Portföy Oyunu (Rejim Bazlı + Kur + Leaderboard + Grafik)
 #
-# Eklenenler:
-# 1) Leaderboard (aynı cihaz/oturum içinde isim bazlı skor tablosu)
-# 2) Portföy grafiği (tur bazında değer)
-# 3) CDS → Faiz → Tahvil Fiyatı mekanizması için küçük “animasyon” (adım adım gösterim)
-#
-# Notlar:
-# - Kuyruk riski ve VaR YOK.
-# - Leaderboard kalıcı değildir (Streamlit oturumu kapanınca sıfırlanır). İstersen CSV kaydı ekleyebilirim.
+# Bu sürüm matplotlib KULLANMAZ (Streamlit Cloud'da sorunsuz çalışır).
+# Grafik için st.line_chart kullanır.
 #
 # Çalıştır:
-#   pip install streamlit numpy pandas matplotlib
+#   pip install streamlit numpy pandas
 #   streamlit run app.py
 
 import time
 import streamlit as st
 import numpy as np
 import pandas as pd
-import matplotlib.pyplot as plt
 
 st.set_page_config(page_title="Risk mi Getiri mi? | Portföy Oyunu", layout="wide")
 
 # -----------------------------
-# CSS: Piyasa Kartı font küçültme
+# CSS: "2) Bu Tur Piyasa Kartı" font küçültme
 # -----------------------------
 st.markdown(
     """
 <style>
-/* Sadece "piyasa_karti" alanını küçült */
 .piyasa_karti { font-size: 0.85rem; line-height: 1.25; }
 .piyasa_karti p, .piyasa_karti li, .piyasa_karti .stMarkdown { font-size: 0.85rem !important; }
 .piyasa_karti [data-testid="stMetricLabel"] { font-size: 0.74rem !important; }
@@ -175,7 +167,6 @@ def validate_total(pcts: dict) -> tuple[bool, str, int]:
     return True, "", total
 
 def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
-    # korelasyon yok varsayımı (ders için)
     mu = 0.0
     var = 0.0
     for a in ASSETS:
@@ -185,16 +176,14 @@ def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
 
 def run_mechanism_animation(container, cds_bps: int, policy: float, inf: float, prev_y: float):
     """
-    Adım adım küçük animasyon: CDS → faiz → fiyat
+    Adım adım animasyon: CDS → faiz → tahvil fiyatı
     """
-    # Adım 1: CDS
     container.info(f"Adım 1/3: CDS = **{cds_bps} bps** → risk primi artabilir.")
-    time.sleep(0.35)
+    time.sleep(0.30)
 
     comps = tr_yield_components(policy, cds_bps, inf)
     y = comps["yield"]
 
-    # Adım 2: Faiz
     container.warning(
         f"Adım 2/3: TR 2Y faiz ≈ politika + enflasyon katmanı + risk primi\n\n"
         f"- Politika: **%{comps['policy']*100:.1f}**\n"
@@ -202,9 +191,8 @@ def run_mechanism_animation(container, cds_bps: int, policy: float, inf: float, 
         f"- Risk primi: **%{comps['risk_premium']*100:.1f}**\n\n"
         f"➡️ Toplam faiz: **%{y*100:.1f}**"
     )
-    time.sleep(0.35)
+    time.sleep(0.30)
 
-    # Adım 3: Fiyat
     prev_p = bond_price_from_yield(prev_y)
     curr_p = bond_price_from_yield(y)
     price_effect = (curr_p - prev_p) / prev_p
@@ -229,17 +217,17 @@ if "tur_idx" not in st.session_state:
     st.session_state.tur_idx = 0
 
 if "history" not in st.session_state:
-    st.session_state.history = []  # tur bazlı
+    st.session_state.history = []
 
 if "seed" not in st.session_state:
-    st.session_state.seed = 42  # sabit (kontrol paneli yok)
+    st.session_state.seed = 42
 
 if "prev_tr_yield" not in st.session_state:
     first = ROUNDS[0]
     st.session_state.prev_tr_yield = tr_yield_components(first["policy"], first["cds"], first["inf"])["yield"]
 
 if "leaderboard" not in st.session_state:
-    st.session_state.leaderboard = []  # dict: name, final_value, date/time optional
+    st.session_state.leaderboard = []  # {"Oyuncu":..., "Final":...}
 
 # Varsayılan yüzdeler
 for k, v in [("pct_tr", 35), ("pct_us", 20), ("pct_eq", 30), ("pct_fx", 10), ("pct_cash", 5)]:
@@ -365,23 +353,19 @@ with right:
         m1.metric("Beklenen getiri (bu tur)", f"{exp_mu*100:.2f}%")
         m2.metric("Tahmini risk (bu tur)", f"{exp_sigma*100:.2f}%")
 
-        # Tur oyna
         if st.button("▶️ Turu Oyna", disabled=(not ok)):
-            # Tahvil fiyat etkisi (faiz değişimi)
             prev_y = st.session_state.prev_tr_yield
+
+            # Tahvil fiyat etkisi
             prev_p = bond_price_from_yield(prev_y)
             curr_p = bond_price_from_yield(tr_y)
             tr_price_effect = (curr_p - prev_p) / prev_p
 
             rng = np.random.default_rng(st.session_state.seed + r["tur"] * 101)
 
-            # Getirileri üret
             rets = simulate_returns(rng, dyn)
-
-            # TR tahvil getirisini faiz->fiyat etkisi ile düzelt
             rets["TR"] = float(rets["TR"] + tr_price_effect)
 
-            # Portföy getirisi
             port_r = 0.0
             for a in ASSETS:
                 port_r += weights[a] * rets[a]
@@ -409,10 +393,8 @@ with right:
                 "A_CASH": weights["CASH"],
             })
 
-            # tur ilerlet
             st.session_state.prev_tr_yield = tr_y
             st.session_state.tur_idx += 1
-
             st.rerun()
 
 st.divider()
@@ -427,7 +409,6 @@ if len(st.session_state.history) == 0:
 else:
     df_hist = pd.DataFrame(st.session_state.history)
 
-    # Görüntüleme formatı
     df_show = df_hist.copy()
     df_show["TR_Faiz"] = df_show["TR_Faiz"] * 100
     df_show["Tahvil_Fiyat_Etkisi"] = df_show["Tahvil_Fiyat_Etkisi"] * 100
@@ -455,25 +436,16 @@ else:
         use_container_width=True
     )
 
-    # Portföy grafiği
     st.subheader("📈 Portföy Değeri Grafiği")
-    fig = plt.figure()
-    x = df_hist["Tur"].tolist()
-    y = df_hist["Portföy_Değeri"].tolist()
-    plt.plot(x, y, marker="o")
-    plt.xlabel("Tur")
-    plt.ylabel("Portföy Değeri (TL)")
-    plt.title("Tur Bazında Portföy Değeri")
-    st.pyplot(fig)
+    chart_df = df_hist[["Tur", "Portföy_Değeri"]].set_index("Tur")
+    st.line_chart(chart_df)
 
-    # Oyun bitince leaderboard’a ekleme
+    # Final + Leaderboard
     if st.session_state.tur_idx >= N_ROUNDS:
         st.subheader("🏁 Final Skor")
-
         final_value = float(st.session_state.capital)
         st.metric("Final Portföy Değeri", f"{final_value:,.0f} TL")
 
-        # aynı isimle tekrar eklenmesin diye: sadece bu turda ekle butonu
         c1, c2 = st.columns([1, 1])
         with c1:
             if st.button("➕ Leaderboard'a Kaydet"):
@@ -487,17 +459,14 @@ else:
                 st.session_state.leaderboard = []
                 st.success("Leaderboard temizlendi.")
 
-        # Leaderboard tablosu
         st.subheader("🏆 Leaderboard")
         if len(st.session_state.leaderboard) == 0:
             st.write("Leaderboard boş.")
         else:
-            lb = pd.DataFrame(st.session_state.leaderboard)
-            lb = lb.sort_values("Final", ascending=False).reset_index(drop=True)
+            lb = pd.DataFrame(st.session_state.leaderboard).sort_values("Final", ascending=False).reset_index(drop=True)
             lb.index = lb.index + 1
             st.dataframe(lb.style.format({"Final": "{:,.0f}"}), use_container_width=True)
 
-    # CSV indir
     st.download_button(
         "⬇️ Sonuçları CSV indir",
         data=df_hist.to_csv(index=False).encode("utf-8"),
