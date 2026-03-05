@@ -1,8 +1,9 @@
 # app.py
-# Borsa Uygulamaları – Bireysel Portföy Oyunu (Rejim Bazlı + Kur + Leaderboard + Grafik)
+# Borsa Uygulamaları – Bireysel Portföy Oyunu
+# (Piyasa Koşulları + Kur + Grafik + Leaderboard + CDS→Faiz→Tahvil Fiyatı “Animasyon” + Tur Sonu Açıklama)
 #
-# Bu sürüm matplotlib KULLANMAZ (Streamlit Cloud'da sorunsuz çalışır).
-# Grafik için st.line_chart kullanır.
+# Bu sürüm matplotlib KULLANMAZ (Streamlit Cloud uyumlu).
+# Grafik: st.line_chart
 #
 # Çalıştır:
 #   pip install streamlit numpy pandas
@@ -15,25 +16,33 @@ import pandas as pd
 
 st.set_page_config(page_title="Risk mi Getiri mi? | Portföy Oyunu", layout="wide")
 
-# -----------------------------
-# CSS: "2) Bu Tur Piyasa Kartı" font küçültme
-# -----------------------------
-st.markdown(
-    """
+# -------------------------------------------------
+# FONT AYARI (SADECE "2) Bu Tur Piyasa Kartı" ALTINDA)
+# -------------------------------------------------
+st.markdown("""
 <style>
-.piyasa_karti { font-size: 0.85rem; line-height: 1.25; }
-.piyasa_karti p, .piyasa_karti li, .piyasa_karti .stMarkdown { font-size: 0.85rem !important; }
-.piyasa_karti [data-testid="stMetricLabel"] { font-size: 0.74rem !important; }
-.piyasa_karti [data-testid="stMetricValue"] { font-size: 1.02rem !important; }
-.piyasa_karti [data-testid="stDataFrame"] { font-size: 0.78rem !important; }
+.piyasa_karti {
+  font-size: 0.84rem;
+  line-height: 1.25;
+}
+.piyasa_karti p, .piyasa_karti li, .piyasa_karti .stMarkdown, .piyasa_karti div, .piyasa_karti span {
+  font-size: 0.84rem !important;
+}
+.piyasa_karti [data-testid="stMetricLabel"] {
+  font-size: 0.72rem !important;
+}
+.piyasa_karti [data-testid="stMetricValue"] {
+  font-size: 1.02rem !important;
+}
+.piyasa_karti [data-testid="stDataFrame"] {
+  font-size: 0.78rem !important;
+}
 </style>
-""",
-    unsafe_allow_html=True,
-)
+""", unsafe_allow_html=True)
 
-# -----------------------------
-# Oyun Parametreleri
-# -----------------------------
+# -------------------------------------------------
+# OYUN PARAMETRELERİ
+# -------------------------------------------------
 STARTING_CAPITAL = 100_000
 N_ROUNDS = 5
 
@@ -55,7 +64,8 @@ BASE = {
     "CASH": {"mu": 0.000, "sigma": 0.000},
 }
 
-REGIMES = {
+# Piyasa koşulları (mu ekleri + sigma çarpanları)
+PIYASA_KOSULLARI = {
     "Sakin": {
         "TR": {"mu_add": 0.000, "sigma_mult": 1.00},
         "US": {"mu_add": 0.000, "sigma_mult": 1.00},
@@ -88,25 +98,23 @@ REGIMES = {
     },
 }
 
+# Tur senaryoları
 ROUNDS = [
-    {"tur": 1, "rejim": "Sakin", "haber": "Piyasalarda sakin dönem", "policy": 0.35, "cds": 250, "inf": 0.30},
-    {"tur": 2, "rejim": "Enflasyon Baskısı", "haber": "Enflasyon beklentisi yükseldi", "policy": 0.35, "cds": 350, "inf": 0.45},
-    {"tur": 3, "rejim": "Risk Şoku", "haber": "Risk algısı bozuldu, CDS yükseldi", "policy": 0.40, "cds": 650, "inf": 0.50},
-    {"tur": 4, "rejim": "Stres", "haber": "Belirsizlik artıyor: risk primi yüksek", "policy": 0.45, "cds": 800, "inf": 0.55},
-    {"tur": 5, "rejim": "İyileşme", "haber": "Kısmi iyileşme: CDS geriliyor", "policy": 0.40, "cds": 420, "inf": 0.40},
+    {"tur": 1, "piyasa_kosullari": "Sakin", "haber": "Piyasalarda sakin dönem", "policy": 0.35, "cds": 250, "inf": 0.30},
+    {"tur": 2, "piyasa_kosullari": "Enflasyon Baskısı", "haber": "Enflasyon beklentisi yükseldi", "policy": 0.35, "cds": 350, "inf": 0.45},
+    {"tur": 3, "piyasa_kosullari": "Risk Şoku", "haber": "Risk algısı bozuldu, CDS yükseldi", "policy": 0.40, "cds": 650, "inf": 0.50},
+    {"tur": 4, "piyasa_kosullari": "Stres", "haber": "Belirsizlik artıyor: risk primi yüksek", "policy": 0.45, "cds": 800, "inf": 0.55},
+    {"tur": 5, "piyasa_kosullari": "İyileşme", "haber": "Kısmi iyileşme: CDS geriliyor", "policy": 0.40, "cds": 420, "inf": 0.40},
 ]
 
-# -----------------------------
-# Fonksiyonlar
-# -----------------------------
+# -------------------------------------------------
+# FONKSİYONLAR
+# -------------------------------------------------
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
 def tr_yield_components(policy: float, cds_bps: int, inf: float) -> dict:
-    """
-    TR 2Y faiz (temsili):
-      y = politika + (enflasyon beklentisi katmanı) + risk primi(CDS)
-    """
+    # TR 2Y faiz (temsili): politika + enflasyon katmanı + risk primi (CDS)
     k = 1.10
     risk_premium = (cds_bps / 10000.0) * k
     inflation_layer = 0.30 * inf
@@ -117,9 +125,9 @@ def bond_price_from_yield(y: float, duration: float = 1.8, face: float = 100.0) 
     y = max(y, 1e-6)
     return face / ((1.0 + y) ** duration)
 
-def dynamic_params(regime: str, cds_bps: int) -> dict:
+def dynamic_params(piyasa_kosullari: str, cds_bps: int) -> dict:
     """
-    Rejim + CDS'e göre mu/sigma.
+    Piyasa koşulları + CDS'e göre mu/sigma.
     CDS ↑:
       - EQ mu ↓, sigma ↑
       - TR sigma ↑, mu hafif ↓
@@ -127,7 +135,7 @@ def dynamic_params(regime: str, cds_bps: int) -> dict:
     """
     out = {a: {"mu": BASE[a]["mu"], "sigma": BASE[a]["sigma"]} for a in ASSETS}
 
-    r = REGIMES[regime]
+    r = PIYASA_KOSULLARI[piyasa_kosullari]
     for a in ["TR", "US", "EQ", "FX"]:
         out[a]["mu"] += r[a]["mu_add"]
         out[a]["sigma"] *= r[a]["sigma_mult"]
@@ -171,15 +179,15 @@ def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
     var = 0.0
     for a in ASSETS:
         mu += weights[a] * dyn[a]["mu"]
-        var += (weights[a] ** 2) * (dyn[a]["sigma"] ** 2)
+        var += (weights[a] ** 2) * (dyn[a]["sigma"] ** 2)  # korelasyon yok (ders için)
     return float(mu), float(np.sqrt(var))
 
-def run_mechanism_animation(container, cds_bps: int, policy: float, inf: float, prev_y: float):
+def mechanism_animation(container, cds_bps: int, policy: float, inf: float, prev_y: float):
     """
-    Adım adım animasyon: CDS → faiz → tahvil fiyatı
+    Adım adım (3 adım) gösterim: CDS → faiz → tahvil fiyatı
     """
     container.info(f"Adım 1/3: CDS = **{cds_bps} bps** → risk primi artabilir.")
-    time.sleep(0.30)
+    time.sleep(0.25)
 
     comps = tr_yield_components(policy, cds_bps, inf)
     y = comps["yield"]
@@ -191,7 +199,7 @@ def run_mechanism_animation(container, cds_bps: int, policy: float, inf: float, 
         f"- Risk primi: **%{comps['risk_premium']*100:.1f}**\n\n"
         f"➡️ Toplam faiz: **%{y*100:.1f}**"
     )
-    time.sleep(0.30)
+    time.sleep(0.25)
 
     prev_p = bond_price_from_yield(prev_y)
     curr_p = bond_price_from_yield(y)
@@ -204,9 +212,48 @@ def run_mechanism_animation(container, cds_bps: int, policy: float, inf: float, 
         f"➡️ Tahvil fiyat etkisi: **{price_effect*100:.2f}%**"
     )
 
-# -----------------------------
-# Session State
-# -----------------------------
+def tur_sonu_aciklama(piyasa_kosullari: str, cds_bps: int, weights: dict, rets: dict, tr_price_effect: float) -> str:
+    """
+    Tur sonunda “neden böyle oldu?” açıklaması: anlaşılır, kısa, ders uyumlu.
+    """
+    # En baskın katkı (ağırlık * getiri)
+    contributions = {a: weights[a] * rets[a] for a in ASSETS}
+    biggest = max(contributions, key=lambda k: abs(contributions[k]))
+    biggest_name = ASSET_NAMES[biggest]
+    biggest_contrib = contributions[biggest] * 100
+
+    msg = []
+    msg.append(f"**Piyasa Koşulları:** {piyasa_kosullari} | **CDS:** {cds_bps} bps")
+
+    # CDS yorumu
+    if cds_bps >= 650:
+        msg.append("- CDS yüksek: risk primi baskısı arttı → borsa daha oynak, kurda yukarı baskı olasılığı daha yüksek.")
+    elif cds_bps >= 400:
+        msg.append("- CDS orta-yüksek: risk algısı temkinli → riskli varlıklarda dalgalanma artabilir.")
+    else:
+        msg.append("- CDS düşük/orta: risk algısı daha sakin → oynaklık nispeten düşük kalabilir.")
+
+    # Tahvil fiyat etkisi
+    if abs(tr_price_effect) > 0.002:
+        direction = "azaldı" if tr_price_effect < 0 else "arttı"
+        msg.append(f"- Faiz değişimi nedeniyle TR tahvil fiyatı **{direction}** (fiyat etkisi: **{tr_price_effect*100:.2f}%**).")
+
+    # En büyük katkı
+    msg.append(f"- Bu tur portföy sonucunu en çok etkileyen kalem: **{biggest_name}** (katkı: **{biggest_contrib:+.2f} puan**).")
+
+    # Basit öneri (didaktik)
+    if weights["EQ"] + weights["FX"] >= 0.60:
+        msg.append("- Portföy riskli ağırlıklı (Borsa + Kur yüksek): sonuçlar daha değişken olabilir.")
+    elif weights["TR"] + weights["US"] + weights["CASH"] >= 0.70:
+        msg.append("- Portföy daha korumacı (Tahvil + Nakit yüksek): dalgalanma genelde daha sınırlı olur.")
+    else:
+        msg.append("- Portföy dengeli: şoklarda darbeyi azaltıp iyileşmede fırsat yakalama potansiyeli artar.")
+
+    return "\n".join(msg)
+
+# -------------------------------------------------
+# SESSION STATE
+# -------------------------------------------------
 if "player" not in st.session_state:
     st.session_state.player = "Öğrenci"
 
@@ -217,28 +264,28 @@ if "tur_idx" not in st.session_state:
     st.session_state.tur_idx = 0
 
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []  # tur bazlı kayıt
 
 if "seed" not in st.session_state:
-    st.session_state.seed = 42
+    st.session_state.seed = 42  # sabit
 
 if "prev_tr_yield" not in st.session_state:
     first = ROUNDS[0]
     st.session_state.prev_tr_yield = tr_yield_components(first["policy"], first["cds"], first["inf"])["yield"]
 
 if "leaderboard" not in st.session_state:
-    st.session_state.leaderboard = []  # {"Oyuncu":..., "Final":...}
+    st.session_state.leaderboard = []  # {"Oyuncu":..., "Final":..., "Zaman":...}
 
 # Varsayılan yüzdeler
 for k, v in [("pct_tr", 35), ("pct_us", 20), ("pct_eq", 30), ("pct_fx", 10), ("pct_cash", 5)]:
     if k not in st.session_state:
         st.session_state[k] = v
 
-# -----------------------------
-# Üst Başlık
-# -----------------------------
-st.title("🎮 Risk mi Getiri mi? – Bireysel Portföy Oyunu (Kur + Grafik + Leaderboard)")
-st.caption("Rejim bazlı senaryo: CDS–faiz–tahvil fiyatı mekanizması + borsa + kur.")
+# -------------------------------------------------
+# ÜST BAŞLIK
+# -------------------------------------------------
+st.title("🎮 Risk mi Getiri mi? – Bireysel Portföy Oyunu")
+st.caption("Piyasa Koşulları değiştikçe CDS–faiz–tahvil fiyatı–borsa–kur dinamikleri farklılaşır.")
 
 top_a, top_b, top_c = st.columns([1.1, 1.0, 1.0])
 with top_a:
@@ -259,9 +306,9 @@ st.divider()
 
 left, right = st.columns([1.25, 0.75])
 
-# -----------------------------
-# SOL: Varlık kartları + Piyasa kartı (font küçük)
-# -----------------------------
+# -------------------------------------------------
+# SOL: Varlık kartları + Piyasa kartı (küçük font)
+# -------------------------------------------------
 with left:
     st.subheader("1) Varlık Kartları (Baz)")
 
@@ -275,10 +322,12 @@ with left:
     st.dataframe(df_cards, use_container_width=True)
 
     st.subheader("2) Bu Tur Piyasa Kartı")
+
+    # Başlık normal, altı küçük font
     st.markdown('<div class="piyasa_karti">', unsafe_allow_html=True)
 
     if st.session_state.tur_idx >= N_ROUNDS:
-        st.success("Oyun tamamlandı ✅ (Aşağıda sonuçlar ve leaderboard var.)")
+        st.success("Oyun tamamlandı ✅ (Aşağıda sonuçlar + leaderboard var.)")
     else:
         r = ROUNDS[st.session_state.tur_idx]
         comps = tr_yield_components(r["policy"], r["cds"], r["inf"])
@@ -286,7 +335,7 @@ with left:
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Tur", f"{r['tur']}/{N_ROUNDS}")
-        c2.metric("Rejim", r["rejim"])
+        c2.metric("Piyasa Koşulları", r["piyasa_kosullari"])
         c3.metric("Politika", f"%{r['policy']*100:.1f}")
         c4.metric("CDS", f"{r['cds']} bps")
         c5.metric("Enflasyon", f"%{r['inf']*100:.1f}")
@@ -294,7 +343,7 @@ with left:
         st.write(f"**Haber:** {r['haber']}")
         st.metric("TR 2Y tahvil faizi (temsili)", f"%{tr_y*100:.1f}")
 
-        dyn = dynamic_params(r["rejim"], r["cds"])
+        dyn = dynamic_params(r["piyasa_kosullari"], r["cds"])
         df_dyn = pd.DataFrame([{
             "Varlık": ASSET_NAMES[a],
             "Beklenen getiri (bu tur)": f"{dyn[a]['mu']*100:.2f}%",
@@ -302,10 +351,10 @@ with left:
         } for a in ASSETS])
         st.dataframe(df_dyn, use_container_width=True)
 
-        with st.expander("CDS → Faiz → Tahvil Fiyatı (Animasyon)", expanded=False):
+        with st.expander("CDS → Faiz → Tahvil Fiyatı (3 adım gösterim)", expanded=False):
             ph = st.empty()
-            if st.button("▶️ Mekanizmayı Göster (3 adım)"):
-                run_mechanism_animation(
+            if st.button("▶️ Mekanizmayı Göster"):
+                mechanism_animation(
                     container=ph,
                     cds_bps=r["cds"],
                     policy=r["policy"],
@@ -315,9 +364,9 @@ with left:
 
     st.markdown("</div>", unsafe_allow_html=True)
 
-# -----------------------------
+# -------------------------------------------------
 # SAĞ: Karar + Oyna
-# -----------------------------
+# -------------------------------------------------
 with right:
     st.subheader("3) Karar Ver ve Oyna")
 
@@ -327,9 +376,9 @@ with right:
         r = ROUNDS[st.session_state.tur_idx]
         comps = tr_yield_components(r["policy"], r["cds"], r["inf"])
         tr_y = comps["yield"]
-        dyn = dynamic_params(r["rejim"], r["cds"])
+        dyn = dynamic_params(r["piyasa_kosullari"], r["cds"])
 
-        st.write("Yüzdeleri kutucuklardan gir (toplam %100):")
+        st.write("Yüzdeleri gir (toplam %100):")
 
         i1, i2 = st.columns(2)
         with i1:
@@ -356,7 +405,7 @@ with right:
         if st.button("▶️ Turu Oyna", disabled=(not ok)):
             prev_y = st.session_state.prev_tr_yield
 
-            # Tahvil fiyat etkisi
+            # Tahvil fiyat etkisi (faiz değişimi)
             prev_p = bond_price_from_yield(prev_y)
             curr_p = bond_price_from_yield(tr_y)
             tr_price_effect = (curr_p - prev_p) / prev_p
@@ -366,17 +415,24 @@ with right:
             rets = simulate_returns(rng, dyn)
             rets["TR"] = float(rets["TR"] + tr_price_effect)
 
-            port_r = 0.0
-            for a in ASSETS:
-                port_r += weights[a] * rets[a]
+            port_r = sum(weights[a] * rets[a] for a in ASSETS)
 
             old_val = st.session_state.capital
             new_val = old_val * (1.0 + port_r)
             st.session_state.capital = float(new_val)
 
+            # tur sonu açıklama
+            explanation = tur_sonu_aciklama(
+                piyasa_kosullari=r["piyasa_kosullari"],
+                cds_bps=r["cds"],
+                weights=weights,
+                rets=rets,
+                tr_price_effect=tr_price_effect
+            )
+
             st.session_state.history.append({
                 "Tur": r["tur"],
-                "Rejim": r["rejim"],
+                "Piyasa Koşulları": r["piyasa_kosullari"],
                 "CDS": r["cds"],
                 "TR_Faiz": tr_y,
                 "Tahvil_Fiyat_Etkisi": tr_price_effect,
@@ -391,6 +447,7 @@ with right:
                 "A_EQ": weights["EQ"],
                 "A_FX": weights["FX"],
                 "A_CASH": weights["CASH"],
+                "Açıklama": explanation
             })
 
             st.session_state.prev_tr_yield = tr_y
@@ -399,9 +456,9 @@ with right:
 
 st.divider()
 
-# -----------------------------
+# -------------------------------------------------
 # SONUÇLAR: Tablo + Grafik + Leaderboard
-# -----------------------------
+# -------------------------------------------------
 st.subheader("📊 Sonuçlar")
 
 if len(st.session_state.history) == 0:
@@ -409,6 +466,7 @@ if len(st.session_state.history) == 0:
 else:
     df_hist = pd.DataFrame(st.session_state.history)
 
+    # Görüntü için formatlanmış tablo
     df_show = df_hist.copy()
     df_show["TR_Faiz"] = df_show["TR_Faiz"] * 100
     df_show["Tahvil_Fiyat_Etkisi"] = df_show["Tahvil_Fiyat_Etkisi"] * 100
@@ -436,25 +494,32 @@ else:
         use_container_width=True
     )
 
+    # Tur sonu açıklamaları ayrı göster (daha okunur)
+    st.subheader("🧠 Tur Sonu Açıklamalar")
+    for _, row in df_hist.iterrows():
+        with st.expander(f"Tur {int(row['Tur'])} – {row['Piyasa Koşulları']}", expanded=False):
+            st.markdown(row["Açıklama"])
+
+    # Portföy grafiği
     st.subheader("📈 Portföy Değeri Grafiği")
     chart_df = df_hist[["Tur", "Portföy_Değeri"]].set_index("Tur")
     st.line_chart(chart_df)
 
-    # Final + Leaderboard
+    # Leaderboard (finalde kaydet)
     if st.session_state.tur_idx >= N_ROUNDS:
         st.subheader("🏁 Final Skor")
         final_value = float(st.session_state.capital)
         st.metric("Final Portföy Değeri", f"{final_value:,.0f} TL")
 
-        c1, c2 = st.columns([1, 1])
-        with c1:
+        a, b = st.columns(2)
+        with a:
             if st.button("➕ Leaderboard'a Kaydet"):
                 st.session_state.leaderboard.append({
-                    "Oyuncu": st.session_state.player.strip() or "Öğrenci",
-                    "Final": final_value
+                    "Oyuncu": (st.session_state.player.strip() or "Öğrenci"),
+                    "Final": final_value,
                 })
                 st.success("Kaydedildi.")
-        with c2:
+        with b:
             if st.button("🧹 Leaderboard'ı Temizle"):
                 st.session_state.leaderboard = []
                 st.success("Leaderboard temizlendi.")
@@ -467,6 +532,7 @@ else:
             lb.index = lb.index + 1
             st.dataframe(lb.style.format({"Final": "{:,.0f}"}), use_container_width=True)
 
+    # CSV indir
     st.download_button(
         "⬇️ Sonuçları CSV indir",
         data=df_hist.to_csv(index=False).encode("utf-8"),
