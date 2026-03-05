@@ -1,5 +1,5 @@
 # app.py
-# Borsa Uygulamaları – Bireysel Portföy Oyunu (Sade + Daha İnteraktif)
+# Borsa Uygulamaları – Bireysel Portföy Oyunu
 # CDS – Politika faizi – Enflasyon beklentisi → TR tahvil faizi
 # Faiz ↑ → Tahvil fiyatı ↓ (fiyat etkisi)
 #
