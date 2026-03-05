@@ -46,7 +46,7 @@ st.markdown(
 }
 .pk_label { font-size: 0.70rem; opacity: 0.75; margin-bottom: 6px; }
 .pk_value {
-  font-size: 0.88rem;
+  font-size: 1.10rem;
   font-weight: 700;
   line-height: 1.1;
   word-break: break-word;
