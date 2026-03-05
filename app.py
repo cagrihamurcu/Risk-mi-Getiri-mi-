@@ -1,16 +1,14 @@
 # app.py
 # Borsa Uygulamaları – Bireysel Portföy Oyunu
-# (Piyasa Koşulları + Kur + Grafik + CDS→Faiz→Tahvil Fiyatı “Gösterim” + Tur Sonu Açıklama)
+# (Piyasa Koşulları + Kur + Grafik + Tur Sonu Açıklama)
 #
-# Leaderboard YOK.
-# matplotlib YOK (Streamlit Cloud uyumlu).
-# Grafik: st.line_chart
-#
-# Çalıştır:
-#   pip install streamlit numpy pandas
-#   streamlit run app.py
+# Güncelleme:
+# - "CDS → Faiz → Tahvil Fiyatı (3 adım)" bölümü KALDIRILDI (tam gelmiyordu, gereksiz kalabalık yapıyordu).
+# - 1) 2) 3) başlıklarının altına kısa açıklayıcı metin eklendi.
+# - Leaderboard yok.
+# - matplotlib yok (Streamlit Cloud uyumlu).
+# - Sonuçlar tabloları okunur olacak şekilde "Özet/Detay/Açıklamalar" sekmeleriyle veriliyor.
 
-import time
 import streamlit as st
 import numpy as np
 import pandas as pd
@@ -19,7 +17,7 @@ st.set_page_config(page_title="Risk mi Getiri mi? | Portföy Oyunu", layout="wid
 
 # -------------------------------------------------
 # CSS: (1) Piyasa Kartı altı küçük font
-#      (2) Piyasa Koşulları değerini ekstra küçük yapan kart
+#      (2) Piyasa Koşulları değerini küçük yapan özel kart
 # -------------------------------------------------
 st.markdown("""
 <style>
@@ -31,15 +29,9 @@ st.markdown("""
 .piyasa_karti p, .piyasa_karti li, .piyasa_karti .stMarkdown, .piyasa_karti div, .piyasa_karti span {
   font-size: 0.84rem !important;
 }
-.piyasa_karti [data-testid="stMetricLabel"] {
-  font-size: 0.72rem !important;
-}
-.piyasa_karti [data-testid="stMetricValue"] {
-  font-size: 1.00rem !important;
-}
-.piyasa_karti [data-testid="stDataFrame"] {
-  font-size: 0.78rem !important;
-}
+.piyasa_karti [data-testid="stMetricLabel"] { font-size: 0.72rem !important; }
+.piyasa_karti [data-testid="stMetricValue"] { font-size: 1.00rem !important; }
+.piyasa_karti [data-testid="stDataFrame"] { font-size: 0.78rem !important; }
 
 /* Piyasa Koşulları için özel kart (değer küçük) */
 .pk_card {
@@ -54,7 +46,7 @@ st.markdown("""
   margin-bottom: 6px;
 }
 .pk_value {
-  font-size: 0.88rem;   /* burada küçülttük */
+  font-size: 0.88rem;   /* değer yazısı küçük */
   font-weight: 700;
   line-height: 1.1;
   word-break: break-word;
@@ -132,12 +124,13 @@ ROUNDS = [
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
-def tr_yield_components(policy: float, cds_bps: int, inf: float) -> dict:
+def tr_yield(policy: float, cds_bps: int, inf: float) -> float:
+    # Temsili TR 2Y faiz
     k = 1.10
     risk_premium = (cds_bps / 10000.0) * k
     inflation_layer = 0.30 * inf
     y = max(policy + inflation_layer + risk_premium, 0.0)
-    return {"yield": y, "policy": policy, "infl_layer": inflation_layer, "risk_premium": risk_premium}
+    return y
 
 def bond_price_from_yield(y: float, duration: float = 1.8, face: float = 100.0) -> float:
     y = max(y, 1e-6)
@@ -171,10 +164,7 @@ def dynamic_params(piyasa_kosullari: str, cds_bps: int) -> dict:
 def simulate_returns(rng: np.random.Generator, dyn: dict) -> dict:
     r = {}
     for a in ASSETS:
-        if a == "CASH":
-            r[a] = 0.0
-        else:
-            r[a] = float(rng.normal(dyn[a]["mu"], dyn[a]["sigma"]))
+        r[a] = 0.0 if a == "CASH" else float(rng.normal(dyn[a]["mu"], dyn[a]["sigma"]))
     return r
 
 def validate_total(pcts: dict) -> tuple[bool, str, int]:
@@ -193,14 +183,6 @@ def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
         var += (weights[a] ** 2) * (dyn[a]["sigma"] ** 2)
     return float(mu), float(np.sqrt(var))
 
-def mechanism_steps(cds_bps: int, policy: float, inf: float, prev_y: float) -> dict:
-    comps = tr_yield_components(policy, cds_bps, inf)
-    y = comps["yield"]
-    prev_p = bond_price_from_yield(prev_y)
-    curr_p = bond_price_from_yield(y)
-    price_effect = (curr_p - prev_p) / prev_p
-    return {"comps": comps, "y": y, "prev_p": prev_p, "curr_p": curr_p, "price_effect": price_effect}
-
 def tur_sonu_aciklama(piyasa_kosullari: str, cds_bps: int, weights: dict, rets: dict, tr_price_effect: float) -> str:
     contributions = {a: weights[a] * rets[a] for a in ASSETS}
     biggest = max(contributions, key=lambda k: abs(contributions[k]))
@@ -211,7 +193,7 @@ def tur_sonu_aciklama(piyasa_kosullari: str, cds_bps: int, weights: dict, rets: 
     lines.append(f"**Piyasa Koşulları:** {piyasa_kosullari} | **CDS:** {cds_bps} bps")
 
     if cds_bps >= 650:
-        lines.append("- CDS yüksek: risk algısı bozulur → borsa oynaklığı artar, kurda yukarı baskı olasılığı yükselir.")
+        lines.append("- CDS yüksek: risk algısı bozulur → borsa daha oynak, kurda yukarı baskı olasılığı daha yüksek.")
     elif cds_bps >= 400:
         lines.append("- CDS orta-yüksek: risk algısı temkinli → riskli varlıklarda dalgalanma artabilir.")
     else:
@@ -255,7 +237,7 @@ if "seed" not in st.session_state:
     st.session_state.seed = 42
 if "prev_tr_yield" not in st.session_state:
     first = ROUNDS[0]
-    st.session_state.prev_tr_yield = tr_yield_components(first["policy"], first["cds"], first["inf"])["yield"]
+    st.session_state.prev_tr_yield = tr_yield(first["policy"], first["cds"], first["inf"])
 
 for k, v in [("pct_tr", 35), ("pct_us", 20), ("pct_eq", 30), ("pct_fx", 10), ("pct_cash", 5)]:
     if k not in st.session_state:
@@ -278,7 +260,7 @@ with c:
         st.session_state.tur_idx = 0
         st.session_state.history = []
         first = ROUNDS[0]
-        st.session_state.prev_tr_yield = tr_yield_components(first["policy"], first["cds"], first["inf"])["yield"]
+        st.session_state.prev_tr_yield = tr_yield(first["policy"], first["cds"], first["inf"])
         st.session_state.pct_tr, st.session_state.pct_us, st.session_state.pct_eq, st.session_state.pct_fx, st.session_state.pct_cash = 35, 20, 30, 10, 5
         st.rerun()
 
@@ -290,6 +272,8 @@ left, right = st.columns([1.25, 0.75])
 # -------------------------------------------------
 with left:
     st.subheader("1) Varlık Kartları (Baz)")
+    st.caption("Bu tablo, her varlık için **başlangıç (normal dönem)** beklenen getiri ve oynaklık varsayımlarını gösterir.")
+
     df_cards = pd.DataFrame(
         [{
             "Varlık": ASSET_NAMES[a],
@@ -300,18 +284,19 @@ with left:
     st.dataframe(df_cards, use_container_width=True)
 
     st.subheader("2) Bu Tur Piyasa Kartı")
+    st.caption("Bu turda **Piyasa Koşulları + CDS + politika faizi + enflasyon beklentisi** birlikte çalışır ve varlıkların risk/getiri profilini değiştirir.")
+
+    # Başlık normal, altı küçük font
     st.markdown('<div class="piyasa_karti">', unsafe_allow_html=True)
 
     if st.session_state.tur_idx >= N_ROUNDS:
         st.success("Oyun tamamlandı ✅ (Aşağıda sonuçlar var.)")
     else:
         r = ROUNDS[st.session_state.tur_idx]
-        steps = mechanism_steps(r["cds"], r["policy"], r["inf"], st.session_state.prev_tr_yield)
-        tr_y = steps["y"]
+        tr_y = tr_yield(r["policy"], r["cds"], r["inf"])
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Tur", f"{r['tur']}/{N_ROUNDS}")
-        # Piyasa Koşulları: özel küçük fontlu kart
         c2.markdown(pk_card_html("Piyasa Koşulları", r["piyasa_kosullari"]), unsafe_allow_html=True)
         c3.metric("Politika", f"%{r['policy']*100:.1f}")
         c4.metric("CDS", f"{r['cds']} bps")
@@ -328,27 +313,6 @@ with left:
         } for a in ASSETS])
         st.dataframe(df_dyn, use_container_width=True)
 
-        with st.expander("CDS → Faiz → Tahvil Fiyatı (3 adım)", expanded=False):
-            if st.button("▶️ Göster (3 adım)"):
-                ph = st.empty()
-                ph.info(f"Adım 1/3: CDS = **{r['cds']} bps** → risk primi artabilir.")
-                time.sleep(0.25)
-                comps = steps["comps"]
-                ph.warning(
-                    f"Adım 2/3: TR 2Y faiz ≈ politika + enflasyon katmanı + risk primi\n\n"
-                    f"- Politika: **%{comps['policy']*100:.1f}**\n"
-                    f"- Enflasyon katmanı: **%{comps['infl_layer']*100:.1f}**\n"
-                    f"- Risk primi: **%{comps['risk_premium']*100:.1f}**\n\n"
-                    f"➡️ Toplam faiz: **%{steps['y']*100:.1f}**"
-                )
-                time.sleep(0.25)
-                ph.error(
-                    f"Adım 3/3: Faiz ↑ ise tahvil fiyatı ↓ eğiliminde\n\n"
-                    f"- Önceki faiz: **%{st.session_state.prev_tr_yield*100:.1f}** → fiyat endeksi: **{steps['prev_p']:.2f}**\n"
-                    f"- Yeni faiz: **%{steps['y']*100:.1f}** → fiyat endeksi: **{steps['curr_p']:.2f}**\n"
-                    f"➡️ Tahvil fiyat etkisi: **{steps['price_effect']*100:.2f}%**"
-                )
-
     st.markdown("</div>", unsafe_allow_html=True)
 
 # -------------------------------------------------
@@ -356,13 +320,13 @@ with left:
 # -------------------------------------------------
 with right:
     st.subheader("3) Karar Ver ve Oyna")
+    st.caption("Portföy yüzdelerini seç ve turu oynat. Oyun sonunda her tur için **getiri, portföy değeri ve kısa açıklama** oluşur.")
 
     if st.session_state.tur_idx >= N_ROUNDS:
         st.success("Oyun bitti ✅ Aşağıda sonuçlar.")
     else:
         r = ROUNDS[st.session_state.tur_idx]
-        steps = mechanism_steps(r["cds"], r["policy"], r["inf"], st.session_state.prev_tr_yield)
-        tr_y = steps["y"]
+        tr_y = tr_yield(r["policy"], r["cds"], r["inf"])
         dyn = dynamic_params(r["piyasa_kosullari"], r["cds"])
 
         st.write("Yüzdeleri gir (toplam %100):")
@@ -391,8 +355,14 @@ with right:
         if st.button("▶️ Turu Oyna", disabled=(not ok)):
             rng = np.random.default_rng(st.session_state.seed + r["tur"] * 101)
 
+            # Tahvil fiyat etkisi: faiz değişimi (basit endeks)
+            prev_y = st.session_state.prev_tr_yield
+            prev_p = bond_price_from_yield(prev_y)
+            curr_p = bond_price_from_yield(tr_y)
+            tr_price_effect = (curr_p - prev_p) / prev_p
+
             rets = simulate_returns(rng, dyn)
-            rets["TR"] = float(rets["TR"] + steps["price_effect"])
+            rets["TR"] = float(rets["TR"] + tr_price_effect)
 
             port_r = sum(weights[a] * rets[a] for a in ASSETS)
             new_val = float(st.session_state.capital * (1.0 + port_r))
@@ -403,7 +373,7 @@ with right:
                 cds_bps=r["cds"],
                 weights=weights,
                 rets=rets,
-                tr_price_effect=steps["price_effect"]
+                tr_price_effect=tr_price_effect
             )
 
             st.session_state.history.append({
@@ -411,7 +381,7 @@ with right:
                 "Piyasa Koşulları": r["piyasa_kosullari"],
                 "CDS": r["cds"],
                 "TR_Faiz": tr_y,
-                "Tahvil_Fiyat_Etkisi": steps["price_effect"],
+                "Tahvil_Fiyat_Etkisi": tr_price_effect,
                 "TR_Getiri": rets["TR"],
                 "US_Getiri": rets["US"],
                 "Borsa_Getiri": rets["EQ"],
@@ -433,7 +403,7 @@ with right:
 st.divider()
 
 # -------------------------------------------------
-# SONUÇLAR (Okunur hale getirildi)
+# SONUÇLAR (Okunur)
 # -------------------------------------------------
 st.subheader("📊 Sonuçlar")
 
@@ -445,20 +415,13 @@ else:
     tab1, tab2, tab3 = st.tabs(["Özet Tablo (okunur)", "Detay Tablo (kaydır)", "Açıklamalar"])
 
     with tab1:
-        # dar/okunur özet
         df_sum = df[["Tur", "Piyasa Koşulları", "CDS", "TR_Faiz", "Portföy_Getiri", "Portföy_Değeri"]].copy()
         df_sum["TR_Faiz"] = (df_sum["TR_Faiz"] * 100).round(1)
         df_sum["Portföy_Getiri"] = (df_sum["Portföy_Getiri"] * 100).round(2)
         df_sum["Portföy_Değeri"] = df_sum["Portföy_Değeri"].round(0).astype(int)
-
-        st.dataframe(
-            df_sum,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(df_sum, use_container_width=True, hide_index=True)
 
     with tab2:
-        # geniş tablo: yatay kaydırma için container + dataframe
         df_det = df.drop(columns=["Açıklama"]).copy()
         df_det["TR_Faiz"] = (df_det["TR_Faiz"] * 100).round(1)
         df_det["Tahvil_Fiyat_Etkisi"] = (df_det["Tahvil_Fiyat_Etkisi"] * 100).round(2)
@@ -466,12 +429,7 @@ else:
             df_det[c] = (df_det[c] * 100).round(2)
         for c in ["A_TR", "A_US", "A_EQ", "A_FX", "A_CASH"]:
             df_det[c] = (df_det[c] * 100).round(0).astype(int)
-
-        st.dataframe(
-            df_det,
-            use_container_width=True,
-            hide_index=True
-        )
+        st.dataframe(df_det, use_container_width=True, hide_index=True)
 
     with tab3:
         for _, row in df.iterrows():
