@@ -1,13 +1,19 @@
 # app.py
-# Borsa Uygulamaları – Bireysel Portföy Oyunu
-# (Piyasa Koşulları + Kur + Grafik + Tur Sonu Açıklama)
+# Borsa Uygulamaları – Bireysel Portföy Oyunu (Gerçek veri YOK)
 #
-# Güncelleme:
-# - "CDS → Faiz → Tahvil Fiyatı (3 adım)" bölümü KALDIRILDI (tam gelmiyordu, gereksiz kalabalık yapıyordu).
-# - 1) 2) 3) başlıklarının altına kısa açıklayıcı metin eklendi.
-# - Leaderboard yok.
-# - matplotlib yok (Streamlit Cloud uyumlu).
-# - Sonuçlar tabloları okunur olacak şekilde "Özet/Detay/Açıklamalar" sekmeleriyle veriliyor.
+# EKLENENLER (gerçek veri çekmeden):
+# 1) Beklenen Getiri vs Gerçekleşen Getiri (tur sonunda tablo)
+# 2) Sürpriz Piyasa Şokları (olasılıklı; kontrollü, ders uyumlu)
+# 3) Portföy Risk Göstergesi (EQ% + FX% tabanlı bar + etiket)
+# 4) Karşılaştırma Portföyleri (benchmark): %100 Tahvil(TR), %60 Hisse-40 Tahvil, %100 Nakit
+# 5) Tur sonu otomatik yorum (zaten vardı; geliştirildi)
+#
+# Leaderboard YOK.
+# matplotlib YOK (Streamlit Cloud uyumlu).
+#
+# Çalıştır:
+#   pip install streamlit numpy pandas
+#   streamlit run app.py
 
 import streamlit as st
 import numpy as np
@@ -16,16 +22,13 @@ import pandas as pd
 st.set_page_config(page_title="Risk mi Getiri mi? | Portföy Oyunu", layout="wide")
 
 # -------------------------------------------------
-# CSS: (1) Piyasa Kartı altı küçük font
-#      (2) Piyasa Koşulları değerini küçük yapan özel kart
+# CSS: Piyasa kartı altı küçük font + Piyasa Koşulları değeri küçük kart
 # -------------------------------------------------
-st.markdown("""
+st.markdown(
+    """
 <style>
 /* 2) Bu Tur Piyasa Kartı altı */
-.piyasa_karti {
-  font-size: 0.84rem;
-  line-height: 1.25;
-}
+.piyasa_karti { font-size: 0.84rem; line-height: 1.25; }
 .piyasa_karti p, .piyasa_karti li, .piyasa_karti .stMarkdown, .piyasa_karti div, .piyasa_karti span {
   font-size: 0.84rem !important;
 }
@@ -40,25 +43,24 @@ st.markdown("""
   padding: 10px 12px;
   height: 92px;
 }
-.pk_label {
-  font-size: 0.70rem;
-  opacity: 0.75;
-  margin-bottom: 6px;
-}
+.pk_label { font-size: 0.70rem; opacity: 0.75; margin-bottom: 6px; }
 .pk_value {
-  font-size: 0.88rem;   /* değer yazısı küçük */
+  font-size: 0.88rem;
   font-weight: 700;
   line-height: 1.1;
   word-break: break-word;
 }
 </style>
-""", unsafe_allow_html=True)
+""",
+    unsafe_allow_html=True,
+)
 
 # -------------------------------------------------
 # OYUN PARAMETRELERİ
 # -------------------------------------------------
 STARTING_CAPITAL = 100_000
 N_ROUNDS = 5
+SHOCK_PROB = 0.20  # her tur sürpriz şok olasılığı
 
 ASSETS = ["TR", "US", "EQ", "FX", "CASH"]
 ASSET_NAMES = {
@@ -69,6 +71,7 @@ ASSET_NAMES = {
     "CASH": "Nakit",
 }
 
+# Baz (tur başına) temsili (ders için)
 BASE = {
     "TR": {"mu": 0.020, "sigma": 0.020},
     "US": {"mu": 0.010, "sigma": 0.010},
@@ -77,6 +80,7 @@ BASE = {
     "CASH": {"mu": 0.000, "sigma": 0.000},
 }
 
+# Piyasa Koşulları: mu ekleri + sigma çarpanları
 PIYASA_KOSULLARI = {
     "Sakin": {
         "TR": {"mu_add": 0.000, "sigma_mult": 1.00},
@@ -110,6 +114,7 @@ PIYASA_KOSULLARI = {
     },
 }
 
+# Tur senaryoları (temsili)
 ROUNDS = [
     {"tur": 1, "piyasa_kosullari": "Sakin", "haber": "Piyasalarda sakin dönem", "policy": 0.35, "cds": 250, "inf": 0.30},
     {"tur": 2, "piyasa_kosullari": "Enflasyon Baskısı", "haber": "Enflasyon beklentisi yükseldi", "policy": 0.35, "cds": 350, "inf": 0.45},
@@ -118,23 +123,56 @@ ROUNDS = [
     {"tur": 5, "piyasa_kosullari": "İyileşme", "haber": "Kısmi iyileşme: CDS geriliyor", "policy": 0.40, "cds": 420, "inf": 0.40},
 ]
 
+# Sürpriz şok kartları (ders uyumlu, gerçek veri yok)
+SHOCKS = [
+    {
+        "name": "Politika Sıkılaşması Şoku",
+        "desc": "Merkez bankasından beklenenden sert sıkılaşma sinyali.",
+        "impacts": {"TR": -0.030, "EQ": -0.050, "FX": +0.020, "US": +0.003, "CASH": 0.0},
+    },
+    {
+        "name": "Küresel Riskten Kaçış",
+        "desc": "Global risk iştahı düştü, güvenli liman talebi arttı.",
+        "impacts": {"TR": -0.020, "EQ": -0.070, "FX": +0.040, "US": +0.008, "CASH": 0.0},
+    },
+    {
+        "name": "Risk İştahı Artışı",
+        "desc": "Beklentiler iyileşti, riskli varlıklara giriş hızlandı.",
+        "impacts": {"TR": +0.010, "EQ": +0.060, "FX": -0.020, "US": -0.002, "CASH": 0.0},
+    },
+    {
+        "name": "Kur Baskısı Şoku",
+        "desc": "Kur tarafında ani yukarı hareket beklentisi güçlendi.",
+        "impacts": {"TR": -0.015, "EQ": -0.030, "FX": +0.060, "US": +0.002, "CASH": 0.0},
+    },
+]
+
+# Benchmark portföyler (karşılaştırma)
+BENCHMARKS = {
+    "%100 TR Tahvil": {"TR": 1.0, "US": 0.0, "EQ": 0.0, "FX": 0.0, "CASH": 0.0},
+    "%60 Borsa / %40 TR Tahvil": {"TR": 0.40, "US": 0.0, "EQ": 0.60, "FX": 0.0, "CASH": 0.0},
+    "%100 Nakit": {"TR": 0.0, "US": 0.0, "EQ": 0.0, "FX": 0.0, "CASH": 1.0},
+}
+
 # -------------------------------------------------
 # FONKSİYONLAR
 # -------------------------------------------------
 def clamp(x: float, lo: float, hi: float) -> float:
     return max(lo, min(hi, x))
 
+
 def tr_yield(policy: float, cds_bps: int, inf: float) -> float:
-    # Temsili TR 2Y faiz
+    # temsili TR 2Y faiz: politika + enflasyon katmanı + CDS risk primi
     k = 1.10
     risk_premium = (cds_bps / 10000.0) * k
     inflation_layer = 0.30 * inf
-    y = max(policy + inflation_layer + risk_premium, 0.0)
-    return y
+    return max(policy + inflation_layer + risk_premium, 0.0)
+
 
 def bond_price_from_yield(y: float, duration: float = 1.8, face: float = 100.0) -> float:
     y = max(y, 1e-6)
     return face / ((1.0 + y) ** duration)
+
 
 def dynamic_params(piyasa_kosullari: str, cds_bps: int) -> dict:
     out = {a: {"mu": BASE[a]["mu"], "sigma": BASE[a]["sigma"]} for a in ASSETS}
@@ -144,6 +182,7 @@ def dynamic_params(piyasa_kosullari: str, cds_bps: int) -> dict:
         out[a]["mu"] += r[a]["mu_add"]
         out[a]["sigma"] *= r[a]["sigma_mult"]
 
+    # CDS duyarlılığı (ders amaçlı basit)
     cds_scale = cds_bps / 10000.0
 
     out["EQ"]["mu"] -= cds_scale * 0.08
@@ -161,11 +200,13 @@ def dynamic_params(piyasa_kosullari: str, cds_bps: int) -> dict:
 
     return out
 
+
 def simulate_returns(rng: np.random.Generator, dyn: dict) -> dict:
     r = {}
     for a in ASSETS:
         r[a] = 0.0 if a == "CASH" else float(rng.normal(dyn[a]["mu"], dyn[a]["sigma"]))
     return r
+
 
 def validate_total(pcts: dict) -> tuple[bool, str, int]:
     total = int(round(sum(pcts.values())))
@@ -175,6 +216,7 @@ def validate_total(pcts: dict) -> tuple[bool, str, int]:
         return False, "Toplam **%100** olmalı.", total
     return True, "", total
 
+
 def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
     mu = 0.0
     var = 0.0
@@ -183,36 +225,6 @@ def portfolio_expected(weights: dict, dyn: dict) -> tuple[float, float]:
         var += (weights[a] ** 2) * (dyn[a]["sigma"] ** 2)
     return float(mu), float(np.sqrt(var))
 
-def tur_sonu_aciklama(piyasa_kosullari: str, cds_bps: int, weights: dict, rets: dict, tr_price_effect: float) -> str:
-    contributions = {a: weights[a] * rets[a] for a in ASSETS}
-    biggest = max(contributions, key=lambda k: abs(contributions[k]))
-    biggest_name = ASSET_NAMES[biggest]
-    biggest_contrib = contributions[biggest] * 100
-
-    lines = []
-    lines.append(f"**Piyasa Koşulları:** {piyasa_kosullari} | **CDS:** {cds_bps} bps")
-
-    if cds_bps >= 650:
-        lines.append("- CDS yüksek: risk algısı bozulur → borsa daha oynak, kurda yukarı baskı olasılığı daha yüksek.")
-    elif cds_bps >= 400:
-        lines.append("- CDS orta-yüksek: risk algısı temkinli → riskli varlıklarda dalgalanma artabilir.")
-    else:
-        lines.append("- CDS düşük/orta: risk algısı daha sakin → dalgalanma nispeten sınırlı kalabilir.")
-
-    if abs(tr_price_effect) > 0.002:
-        direction = "azaldı" if tr_price_effect < 0 else "arttı"
-        lines.append(f"- Faiz değişimi nedeniyle TR tahvil fiyatı **{direction}** (fiyat etkisi: **{tr_price_effect*100:.2f}%**).")
-
-    lines.append(f"- Portföy sonucunu en çok etkileyen kalem: **{biggest_name}** (katkı: **{biggest_contrib:+.2f} puan**).")
-
-    if weights["EQ"] + weights["FX"] >= 0.60:
-        lines.append("- Portföy riskli ağırlıklı (Borsa + Kur yüksek): sonuçlar daha değişken olabilir.")
-    elif weights["TR"] + weights["US"] + weights["CASH"] >= 0.70:
-        lines.append("- Portföy daha korumacı (Tahvil + Nakit yüksek): dalgalanma genelde daha sınırlı olur.")
-    else:
-        lines.append("- Portföy dengeli: şoklarda darbeyi azaltıp iyileşmede fırsat yakalama potansiyeli artar.")
-
-    return "\n".join(lines)
 
 def pk_card_html(label: str, value: str) -> str:
     return f"""
@@ -221,6 +233,114 @@ def pk_card_html(label: str, value: str) -> str:
   <div class="pk_value">{value}</div>
 </div>
 """
+
+
+def risk_label_and_bar(eq_fx_weight: float) -> tuple[str, str]:
+    """
+    eq_fx_weight: 0..1
+    Basit risk skoru: EQ% + FX%
+    """
+    score = int(round(eq_fx_weight * 100))
+    if score <= 30:
+        lab = "Düşük"
+    elif score <= 60:
+        lab = "Orta"
+    else:
+        lab = "Yüksek"
+
+    filled = min(10, max(0, int(round(score / 10))))
+    bar = "█" * filled + "░" * (10 - filled)
+    return lab, bar
+
+
+def pick_shock(rng: np.random.Generator) -> dict | None:
+    """
+    Olasılıklı şok seçimi (kontrollü).
+    """
+    if float(rng.random()) > SHOCK_PROB:
+        return None
+    idx = int(rng.integers(0, len(SHOCKS)))
+    return SHOCKS[idx]
+
+
+def apply_shock(rets: dict, shock: dict | None) -> dict:
+    if shock is None:
+        return rets
+    out = dict(rets)
+    for a, add in shock["impacts"].items():
+        out[a] = float(out.get(a, 0.0) + add)
+    return out
+
+
+def benchmark_update(prev_vals: dict, realized_rets: dict) -> tuple[dict, dict]:
+    """
+    prev_vals: benchmark adı -> değer
+    realized_rets: varlık -> gerçekleşen getiri (tur)
+    Döndürür: (new_vals, bench_round_returns)
+    """
+    new_vals = {}
+    bench_r = {}
+    for name, w in BENCHMARKS.items():
+        pr = 0.0
+        for a in ASSETS:
+            pr += w[a] * realized_rets[a]
+        bench_r[name] = pr
+        new_vals[name] = float(prev_vals[name] * (1.0 + pr))
+    return new_vals, bench_r
+
+
+def tur_sonu_yorum(piyasa_kosullari: str, cds_bps: int, weights: dict, realized_rets: dict, tr_price_effect: float, shock: dict | None) -> str:
+    # katkılar
+    contrib = {a: weights[a] * realized_rets[a] for a in ASSETS}
+    biggest = max(contrib, key=lambda k: abs(contrib[k]))
+    biggest_name = ASSET_NAMES[biggest]
+    biggest_points = contrib[biggest] * 100
+
+    eq_fx = weights["EQ"] + weights["FX"]
+    risk_lab, _ = risk_label_and_bar(eq_fx)
+
+    lines = []
+    lines.append(f"**Piyasa Koşulları:** {piyasa_kosullari} | **CDS:** {cds_bps} bps | **Portföy risk seviyesi:** {risk_lab}")
+
+    if shock is not None:
+        lines.append(f"**Sürpriz Şok:** {shock['name']} – {shock['desc']}")
+
+    if cds_bps >= 650:
+        lines.append("- CDS yüksek: risk algısı zayıflar → borsada dalgalanma artar, kurda yukarı baskı olasılığı yükselir.")
+    elif cds_bps >= 400:
+        lines.append("- CDS orta-yüksek: temkinli risk algısı → riskli varlıklarda oynaklık artabilir.")
+    else:
+        lines.append("- CDS düşük/orta: risk algısı daha sakin → dalgalanma nispeten sınırlı kalabilir.")
+
+    if abs(tr_price_effect) > 0.002:
+        direction = "azalttı" if tr_price_effect < 0 else "artırdı"
+        lines.append(f"- Faiz değişimi TR tahvil fiyatını **{direction}** (fiyat etkisi: **{tr_price_effect*100:.2f}%**).")
+
+    lines.append(f"- Portföy sonucunu en çok etkileyen kalem: **{biggest_name}** (katkı: **{biggest_points:+.2f} puan**).")
+
+    if eq_fx >= 0.60:
+        lines.append("- Borsa+Kur ağırlığı yüksek: şoklarda sert düşüş / iyi haberde sert yükseliş görülebilir.")
+    elif weights["TR"] + weights["US"] + weights["CASH"] >= 0.70:
+        lines.append("- Tahvil+Nakit ağırlığı yüksek: dalgalanma genelde daha sınırlı olur.")
+    else:
+        lines.append("- Dengeli dağılım: şoklarda darbeyi azaltıp iyileşmede fırsat yakalama şansını artırır.")
+
+    return "\n".join(lines)
+
+
+def expected_vs_realized_table(dyn: dict, realized_rets: dict) -> pd.DataFrame:
+    rows = []
+    for a in ASSETS:
+        rows.append({
+            "Varlık": ASSET_NAMES[a],
+            "Beklenen (μ)": dyn[a]["mu"],
+            "Gerçekleşen": realized_rets[a],
+        })
+    df = pd.DataFrame(rows)
+    df["Beklenen (μ)"] = (df["Beklenen (μ)"] * 100).round(2).astype(str) + "%"
+    df["Gerçekleşen"] = (df["Gerçekleşen"] * 100).round(2).astype(str) + "%"
+    return df
+
 
 # -------------------------------------------------
 # SESSION STATE
@@ -232,13 +352,20 @@ if "capital" not in st.session_state:
 if "tur_idx" not in st.session_state:
     st.session_state.tur_idx = 0
 if "history" not in st.session_state:
-    st.session_state.history = []
+    st.session_state.history = []  # tur kayıtları
 if "seed" not in st.session_state:
     st.session_state.seed = 42
 if "prev_tr_yield" not in st.session_state:
     first = ROUNDS[0]
     st.session_state.prev_tr_yield = tr_yield(first["policy"], first["cds"], first["inf"])
 
+# Benchmark değerleri + geçmişi
+if "bench_vals" not in st.session_state:
+    st.session_state.bench_vals = {k: float(STARTING_CAPITAL) for k in BENCHMARKS.keys()}
+if "bench_hist" not in st.session_state:
+    st.session_state.bench_hist = []  # tur bazında benchmark değerleri
+
+# Varsayılan yüzdeler
 for k, v in [("pct_tr", 35), ("pct_us", 20), ("pct_eq", 30), ("pct_fx", 10), ("pct_cash", 5)]:
     if k not in st.session_state:
         st.session_state[k] = v
@@ -247,7 +374,7 @@ for k, v in [("pct_tr", 35), ("pct_us", 20), ("pct_eq", 30), ("pct_fx", 10), ("p
 # ÜST
 # -------------------------------------------------
 st.title("🎮 Risk mi Getiri mi? – Bireysel Portföy Oyunu")
-st.caption("Piyasa Koşulları değiştikçe CDS–faiz–tahvil fiyatı–borsa–kur dinamikleri farklılaşır.")
+st.caption("Gerçek veri olmadan, kontrollü senaryolarla: CDS–faiz–tahvil–borsa–kur dinamiklerini deneyimle.")
 
 a, b, c = st.columns([1.1, 1.0, 1.0])
 with a:
@@ -259,6 +386,8 @@ with c:
         st.session_state.capital = float(STARTING_CAPITAL)
         st.session_state.tur_idx = 0
         st.session_state.history = []
+        st.session_state.bench_vals = {k: float(STARTING_CAPITAL) for k in BENCHMARKS.keys()}
+        st.session_state.bench_hist = []
         first = ROUNDS[0]
         st.session_state.prev_tr_yield = tr_yield(first["policy"], first["cds"], first["inf"])
         st.session_state.pct_tr, st.session_state.pct_us, st.session_state.pct_eq, st.session_state.pct_fx, st.session_state.pct_cash = 35, 20, 30, 10, 5
@@ -272,7 +401,7 @@ left, right = st.columns([1.25, 0.75])
 # -------------------------------------------------
 with left:
     st.subheader("1) Varlık Kartları (Baz)")
-    st.caption("Bu tablo, her varlık için **başlangıç (normal dönem)** beklenen getiri ve oynaklık varsayımlarını gösterir.")
+    st.caption("Normal koşullarda her varlığın **temsili** beklenen getiri (μ) ve oynaklık (σ) varsayımları.")
 
     df_cards = pd.DataFrame(
         [{
@@ -281,12 +410,11 @@ with left:
             "Baz oynaklık (tur)": f"{BASE[a]['sigma']*100:.1f}%"
         } for a in ASSETS]
     )
-    st.dataframe(df_cards, use_container_width=True)
+    st.dataframe(df_cards, use_container_width=True, hide_index=True)
 
     st.subheader("2) Bu Tur Piyasa Kartı")
-    st.caption("Bu turda **Piyasa Koşulları + CDS + politika faizi + enflasyon beklentisi** birlikte çalışır ve varlıkların risk/getiri profilini değiştirir.")
+    st.caption("Bu turda **Piyasa Koşulları + CDS + politika faizi + enflasyon** varlıkların risk/getiri profilini değiştirir.")
 
-    # Başlık normal, altı küçük font
     st.markdown('<div class="piyasa_karti">', unsafe_allow_html=True)
 
     if st.session_state.tur_idx >= N_ROUNDS:
@@ -294,6 +422,7 @@ with left:
     else:
         r = ROUNDS[st.session_state.tur_idx]
         tr_y = tr_yield(r["policy"], r["cds"], r["inf"])
+        dyn = dynamic_params(r["piyasa_kosullari"], r["cds"])
 
         c1, c2, c3, c4, c5 = st.columns(5)
         c1.metric("Tur", f"{r['tur']}/{N_ROUNDS}")
@@ -305,13 +434,12 @@ with left:
         st.write(f"**Haber:** {r['haber']}")
         st.metric("TR 2Y tahvil faizi (temsili)", f"%{tr_y*100:.1f}")
 
-        dyn = dynamic_params(r["piyasa_kosullari"], r["cds"])
         df_dyn = pd.DataFrame([{
             "Varlık": ASSET_NAMES[a],
             "Beklenen getiri (bu tur)": f"{dyn[a]['mu']*100:.2f}%",
             "Oynaklık (bu tur)": f"{dyn[a]['sigma']*100:.2f}%"
         } for a in ASSETS])
-        st.dataframe(df_dyn, use_container_width=True)
+        st.dataframe(df_dyn, use_container_width=True, hide_index=True)
 
     st.markdown("</div>", unsafe_allow_html=True)
 
@@ -320,7 +448,7 @@ with left:
 # -------------------------------------------------
 with right:
     st.subheader("3) Karar Ver ve Oyna")
-    st.caption("Portföy yüzdelerini seç ve turu oynat. Oyun sonunda her tur için **getiri, portföy değeri ve kısa açıklama** oluşur.")
+    st.caption("Portföy yüzdelerini belirle. Tur sonunda: **beklenen–gerçekleşen**, **şok varsa etkisi**, ve **kısa yorum** oluşur.")
 
     if st.session_state.tur_idx >= N_ROUNDS:
         st.success("Oyun bitti ✅ Aşağıda sonuçlar.")
@@ -348,6 +476,12 @@ with right:
 
         weights = {a: pcts[a] / 100.0 for a in ASSETS}
         exp_mu, exp_sigma = portfolio_expected(weights, dyn)
+
+        # Risk göstergesi (EQ + FX)
+        eq_fx = weights["EQ"] + weights["FX"]
+        rlab, rbar = risk_label_and_bar(eq_fx)
+        st.markdown(f"**Portföy Risk Göstergesi (Borsa% + Kur%)**: `{rbar}`  → **{rlab}** (skor: {int(round(eq_fx*100))})")
+
         m1, m2 = st.columns(2)
         m1.metric("Beklenen getiri (bu tur)", f"{exp_mu*100:.2f}%")
         m2.metric("Tahmini risk (bu tur)", f"{exp_sigma*100:.2f}%")
@@ -355,37 +489,61 @@ with right:
         if st.button("▶️ Turu Oyna", disabled=(not ok)):
             rng = np.random.default_rng(st.session_state.seed + r["tur"] * 101)
 
-            # Tahvil fiyat etkisi: faiz değişimi (basit endeks)
+            # 1) Tahvil fiyat etkisi: faiz değişimi (basit endeks)
             prev_y = st.session_state.prev_tr_yield
             prev_p = bond_price_from_yield(prev_y)
             curr_p = bond_price_from_yield(tr_y)
-            tr_price_effect = (curr_p - prev_p) / prev_p
+            tr_price_effect = float((curr_p - prev_p) / prev_p)
 
+            # 2) Baz gerçekleşen getiriler (rastgele)
             rets = simulate_returns(rng, dyn)
+
+            # 3) Tahvilin gerçekleşen getirisine faiz-fiyat etkisini ekle
             rets["TR"] = float(rets["TR"] + tr_price_effect)
 
-            port_r = sum(weights[a] * rets[a] for a in ASSETS)
+            # 4) Sürpriz şok (olasılıklı) + getirileri güncelle
+            shock = pick_shock(rng)
+            rets_after = apply_shock(rets, shock)
+
+            # 5) Portföy gerçekleşen getirisi
+            port_r = float(sum(weights[a] * rets_after[a] for a in ASSETS))
             new_val = float(st.session_state.capital * (1.0 + port_r))
             st.session_state.capital = new_val
 
-            explanation = tur_sonu_aciklama(
+            # 6) Benchmark portföylerini aynı gerçekleşen getirilerle güncelle
+            new_bench_vals, bench_round_returns = benchmark_update(st.session_state.bench_vals, rets_after)
+            st.session_state.bench_vals = new_bench_vals
+            st.session_state.bench_hist.append({
+                "Tur": r["tur"],
+                **{k: new_bench_vals[k] for k in BENCHMARKS.keys()}
+            })
+
+            # 7) Beklenen vs gerçekleşen tablosu (şok sonrası)
+            evr_df = expected_vs_realized_table(dyn, rets_after)
+
+            # 8) Tur sonu yorum
+            explanation = tur_sonu_yorum(
                 piyasa_kosullari=r["piyasa_kosullari"],
                 cds_bps=r["cds"],
                 weights=weights,
-                rets=rets,
-                tr_price_effect=tr_price_effect
+                realized_rets=rets_after,
+                tr_price_effect=tr_price_effect,
+                shock=shock
             )
 
+            # 9) kayıt
             st.session_state.history.append({
                 "Tur": r["tur"],
                 "Piyasa Koşulları": r["piyasa_kosullari"],
+                "Haber": r["haber"],
+                "Şok": (shock["name"] if shock else ""),
                 "CDS": r["cds"],
                 "TR_Faiz": tr_y,
                 "Tahvil_Fiyat_Etkisi": tr_price_effect,
-                "TR_Getiri": rets["TR"],
-                "US_Getiri": rets["US"],
-                "Borsa_Getiri": rets["EQ"],
-                "Kur_Getiri": rets["FX"],
+                "TR_Getiri": rets_after["TR"],
+                "US_Getiri": rets_after["US"],
+                "Borsa_Getiri": rets_after["EQ"],
+                "Kur_Getiri": rets_after["FX"],
                 "Portföy_Getiri": port_r,
                 "Portföy_Değeri": new_val,
                 "A_TR": weights["TR"],
@@ -393,6 +551,10 @@ with right:
                 "A_EQ": weights["EQ"],
                 "A_FX": weights["FX"],
                 "A_CASH": weights["CASH"],
+                "Bench_%100_TR": new_bench_vals["%100 TR Tahvil"],
+                "Bench_60EQ40TR": new_bench_vals["%60 Borsa / %40 TR Tahvil"],
+                "Bench_%100_Nakit": new_bench_vals["%100 Nakit"],
+                "EVR": evr_df.to_dict(orient="records"),
                 "Açıklama": explanation
             })
 
@@ -403,7 +565,7 @@ with right:
 st.divider()
 
 # -------------------------------------------------
-# SONUÇLAR (Okunur)
+# SONUÇLAR
 # -------------------------------------------------
 st.subheader("📊 Sonuçlar")
 
@@ -412,36 +574,66 @@ if len(st.session_state.history) == 0:
 else:
     df = pd.DataFrame(st.session_state.history)
 
-    tab1, tab2, tab3 = st.tabs(["Özet Tablo (okunur)", "Detay Tablo (kaydır)", "Açıklamalar"])
+    tab1, tab2, tab3, tab4 = st.tabs(["Özet Tablo", "Detay Tablo", "Açıklamalar", "Karşılaştırmalar"])
 
     with tab1:
-        df_sum = df[["Tur", "Piyasa Koşulları", "CDS", "TR_Faiz", "Portföy_Getiri", "Portföy_Değeri"]].copy()
-        df_sum["TR_Faiz"] = (df_sum["TR_Faiz"] * 100).round(1)
-        df_sum["Portföy_Getiri"] = (df_sum["Portföy_Getiri"] * 100).round(2)
+        df_sum = df[["Tur", "Piyasa Koşulları", "CDS", "TR_Faiz", "Portföy_Getiri", "Portföy_Değeri", "Şok"]].copy()
+        df_sum["TR_Faiz"] = (df_sum["TR_Faiz"] * 100).round(1).astype(str) + "%"
+        df_sum["Portföy_Getiri"] = (df_sum["Portföy_Getiri"] * 100).round(2).astype(str) + "%"
         df_sum["Portföy_Değeri"] = df_sum["Portföy_Değeri"].round(0).astype(int)
         st.dataframe(df_sum, use_container_width=True, hide_index=True)
 
     with tab2:
-        df_det = df.drop(columns=["Açıklama"]).copy()
+        # EVR sütunu çok uzun; detaydan çıkarıyoruz
+        cols = [c for c in df.columns if c not in ["EVR", "Açıklama"]]
+        df_det = df[cols].copy()
+
+        # yüzde formatları
         df_det["TR_Faiz"] = (df_det["TR_Faiz"] * 100).round(1)
         df_det["Tahvil_Fiyat_Etkisi"] = (df_det["Tahvil_Fiyat_Etkisi"] * 100).round(2)
         for c in ["TR_Getiri", "US_Getiri", "Borsa_Getiri", "Kur_Getiri", "Portföy_Getiri"]:
             df_det[c] = (df_det[c] * 100).round(2)
         for c in ["A_TR", "A_US", "A_EQ", "A_FX", "A_CASH"]:
             df_det[c] = (df_det[c] * 100).round(0).astype(int)
+
         st.dataframe(df_det, use_container_width=True, hide_index=True)
 
     with tab3:
+        # Tur bazlı açıklamalar + beklenen/gerçekleşen tablo
         for _, row in df.iterrows():
-            with st.expander(f"Tur {int(row['Tur'])} – {row['Piyasa Koşulları']}", expanded=False):
+            title = f"Tur {int(row['Tur'])} – {row['Piyasa Koşulları']}"
+            if row.get("Şok", ""):
+                title += f" | Şok: {row['Şok']}"
+            with st.expander(title, expanded=False):
                 st.markdown(row["Açıklama"])
 
-    st.subheader("📈 Portföy Değeri Grafiği")
-    st.line_chart(df[["Tur", "Portföy_Değeri"]].set_index("Tur"))
+                st.markdown("**Beklenen vs Gerçekleşen (bu tur)**")
+                evr_records = row["EVR"]
+                evr_df = pd.DataFrame(evr_records)
+                st.dataframe(evr_df, use_container_width=True, hide_index=True)
+
+    with tab4:
+        # Portföy grafiği + benchmark grafiği + final karşılaştırma tablosu
+        st.subheader("📈 Portföy Değeri (Senin)")
+        st.line_chart(df[["Tur", "Portföy_Değeri"]].set_index("Tur"))
+
+        if len(st.session_state.bench_hist) > 0:
+            bdf = pd.DataFrame(st.session_state.bench_hist).set_index("Tur")
+            st.subheader("📉 Benchmark Portföyler (Aynı turlarda)")
+            st.line_chart(bdf)
+
+        st.subheader("🏁 Final Karşılaştırma")
+        final_rows = []
+        final_rows.append({"Strateji": "Senin Portföyün", "Final Değer": float(st.session_state.capital)})
+        for name in BENCHMARKS.keys():
+            final_rows.append({"Strateji": name, "Final Değer": float(st.session_state.bench_vals[name])})
+        final_df = pd.DataFrame(final_rows).sort_values("Final Değer", ascending=False)
+        final_df["Final Değer"] = final_df["Final Değer"].round(0).astype(int)
+        st.dataframe(final_df, use_container_width=True, hide_index=True)
 
     st.download_button(
         "⬇️ Sonuçları CSV indir",
-        data=df.to_csv(index=False).encode("utf-8"),
+        data=df.drop(columns=["EVR"]).to_csv(index=False).encode("utf-8"),
         file_name="borsa_portfoy_oyunu_sonuclar.csv",
         mime="text/csv",
     )
